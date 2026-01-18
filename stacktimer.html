@@ -1,0 +1,590 @@
+<!DOCTYPE html>
+<html lang="ko" class="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+    <title>Pro Stacking Timer V2 (Dual Sensor)</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&family=Pretendard:wght@400;600;800&display=swap" rel="stylesheet">
+    <script>
+        tailwind.config = {
+            darkMode: 'class',
+            theme: {
+                extend: {
+                    fontFamily: {
+                        sans: ['Pretendard', 'sans-serif'],
+                        mono: ['JetBrains Mono', 'monospace'],
+                    },
+                    colors: {
+                        glass: 'rgba(255, 255, 255, 0.05)',
+                        neonBlue: '#00f2ff',
+                        neonGreen: '#0aff0a',
+                        neonRed: '#ff0a0a',
+                        sensorActive: 'rgba(0, 242, 255, 0.3)',
+                    },
+                    screens: {
+                        'landscape': {'raw': '(orientation: landscape)'},
+                    }
+                }
+            }
+        }
+    </script>
+    <style>
+        body {
+            background-color: #0f172a;
+            touch-action: none; /* 중요: 멀티터치 제스처 방지 */
+            overflow: hidden;
+            -webkit-user-select: none;
+            user-select: none;
+            -webkit-tap-highlight-color: transparent;
+        }
+
+        /* Glassmorphism */
+        .glass-panel {
+            background: rgba(255, 255, 255, 0.03);
+            backdrop-filter: blur(12px);
+            -webkit-backdrop-filter: blur(12px);
+            border: 1px solid rgba(255, 255, 255, 0.08);
+        }
+
+        /* Sensor Pad Styles */
+        .sensor-box {
+            transition: all 0.15s cubic-bezier(0.4, 0, 0.2, 1);
+            position: relative;
+            overflow: hidden;
+        }
+        
+        .sensor-box.active {
+            background: rgba(0, 242, 255, 0.15);
+            border-color: #00f2ff;
+            box-shadow: 0 0 20px rgba(0, 242, 255, 0.2);
+        }
+
+        /* Hand Indicators */
+        .hand-icon { transition: opacity 0.2s; opacity: 0.2; }
+        .sensor-box.active .hand-icon { opacity: 1; color: #00f2ff; }
+
+        /* Typography */
+        #timer { transition: font-size 0.3s ease, color 0.2s; }
+        body.history-hidden #timer { font-size: min(35vw, 45vh); }
+        body:not(.history-hidden) #timer { font-size: min(25vw, 35vh); }
+
+        /* Scanlines */
+        .scanlines {
+            background: linear-gradient(to bottom, rgba(255,255,255,0), rgba(255,255,255,0) 50%, rgba(0,0,0,0.2) 50%, rgba(0,0,0,0.2));
+            background-size: 100% 4px;
+            position: absolute; inset: 0; pointer-events: none; z-index: 5; opacity: 0.15;
+        }
+        
+        /* Scrollbar Hiding */
+        .no-scrollbar::-webkit-scrollbar { display: none; }
+        .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+
+        /* Animations */
+        @keyframes pulse-ready {
+            0%, 100% { border-color: rgba(10, 255, 10, 0.5); box-shadow: 0 0 15px rgba(10, 255, 10, 0.2) inset; }
+            50% { border-color: rgba(10, 255, 10, 1); box-shadow: 0 0 30px rgba(10, 255, 10, 0.5) inset; }
+        }
+        .ready-state .sensor-box { animation: pulse-ready 0.6s infinite; background: rgba(10, 255, 10, 0.1); }
+    </style>
+</head>
+<body class="text-gray-200 h-screen w-screen flex flex-col landscape:flex-row relative overflow-hidden bg-slate-900 transition-all duration-300">
+
+    <!-- Background -->
+    <div class="absolute inset-0 bg-[radial-gradient(ellipse_at_center,_var(--tw-gradient-stops))] from-slate-800 via-slate-900 to-black -z-10"></div>
+    <div class="scanlines"></div>
+
+    <!-- Top Controls -->
+    <div class="absolute top-4 right-4 z-50 flex gap-2">
+        <button id="toggleHistoryBtn" class="p-2 text-neonBlue bg-black/20 hover:bg-white/10 rounded-lg backdrop-blur-sm transition-all border border-white/5 active:scale-95">
+            <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16" />
+            </svg>
+        </button>
+    </div>
+
+    <!-- LEFT PANEL: Timer & Sensors -->
+    <section class="flex-grow flex flex-col relative h-[70%] landscape:h-full landscape:w-[70%] transition-all duration-300 ease-in-out" id="mainSection">
+        
+        <!-- Header Info -->
+        <header class="w-full p-4 flex justify-between items-start z-20 absolute top-0 pointer-events-none">
+            <div class="flex flex-col pointer-events-auto">
+                <span class="text-[10px] text-gray-500 font-mono tracking-widest mb-1">SCRAMBLE</span>
+                <div id="scrambleDisplay" class="text-xs sm:text-sm font-mono text-neonBlue/90 max-w-[200px] sm:max-w-md break-words leading-tight">Loading...</div>
+            </div>
+            <div id="ao5Overlay" class="hidden flex-col items-end pointer-events-auto">
+                <div class="text-[10px] text-gray-500 font-mono">AO5</div>
+                <div id="ao5DisplayOverlay" class="text-xl font-mono text-white font-bold">--.--</div>
+            </div>
+        </header>
+
+        <!-- Main Timer Display -->
+        <div class="flex-grow flex flex-col justify-center items-center relative z-10" id="mainDisplay">
+            <div id="statusText" class="text-xs md:text-sm font-bold tracking-[0.4em] text-gray-600 mb-2 md:mb-4 transition-colors duration-300">
+                READY TO START
+            </div>
+            <div id="timer" class="font-mono font-bold tracking-tighter text-white tabular-nums drop-shadow-[0_0_15px_rgba(255,255,255,0.2)] leading-none select-none">
+                0.000
+            </div>
+        </div>
+
+        <!-- DUAL SENSOR PAD AREA -->
+        <div class="h-28 landscape:h-32 w-full relative z-30 flex items-end justify-between px-4 pb-4 landscape:px-8 landscape:pb-6 gap-4">
+            
+            <!-- LEFT SENSOR -->
+            <div id="padLeft" class="sensor-box flex-1 h-full bg-white/5 backdrop-blur-md border border-white/10 rounded-2xl flex items-center justify-center cursor-pointer touch-none select-none active:scale-[0.98]">
+                <div class="flex flex-col items-center pointer-events-none">
+                    <svg class="w-10 h-10 landscape:w-14 landscape:h-14 hand-icon rotate-[-15deg]" viewBox="0 0 24 24" fill="currentColor"><path d="M2,20C2,21.1 2.9,22 4,22H20C21.1,22 22,21.1 22,20V6C22,4.9 21.1,4 20,4H4C2.9,4 2,4.9 2,6V20M4,6V20H20V6H4M12,8C10.9,8 10,8.9 10,10C10,11.1 10.9,12 12,12C13.1,12 14,11.1 14,10C14,8.9 13.1,8 12,8Z" /></svg>
+                    <span class="text-[10px] font-mono text-gray-500 mt-1">LEFT</span>
+                </div>
+            </div>
+
+            <!-- CENTER RESET BUTTON -->
+            <div class="w-20 landscape:w-24 h-full flex items-center justify-center">
+                <button id="resetBtn" class="w-16 h-16 rounded-full bg-gray-800 border border-gray-600 flex items-center justify-center shadow-lg active:scale-90 active:bg-gray-700 transition-all group relative overflow-hidden">
+                    <div class="absolute inset-0 rounded-full border-2 border-transparent group-hover:border-neonBlue/30 transition-all"></div>
+                    <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6 text-gray-400 group-hover:text-white transition-colors" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                    </svg>
+                    <span class="absolute -bottom-6 text-[9px] font-bold text-gray-500 tracking-widest">RESET</span>
+                </button>
+            </div>
+
+            <!-- RIGHT SENSOR -->
+            <div id="padRight" class="sensor-box flex-1 h-full bg-white/5 backdrop-blur-md border border-white/10 rounded-2xl flex items-center justify-center cursor-pointer touch-none select-none active:scale-[0.98]">
+                <div class="flex flex-col items-center pointer-events-none">
+                    <svg class="w-10 h-10 landscape:w-14 landscape:h-14 hand-icon rotate-[15deg]" viewBox="0 0 24 24" fill="currentColor"><path d="M2,20C2,21.1 2.9,22 4,22H20C21.1,22 22,21.1 22,20V6C22,4.9 21.1,4 20,4H4C2.9,4 2,4.9 2,6V20M4,6V20H20V6H4M12,8C10.9,8 10,8.9 10,10C10,11.1 10.9,12 12,12C13.1,12 14,11.1 14,10C14,8.9 13.1,8 12,8Z" /></svg>
+                    <span class="text-[10px] font-mono text-gray-500 mt-1">RIGHT</span>
+                </div>
+            </div>
+
+        </div>
+    </section>
+
+    <!-- RIGHT PANEL: Sidebar History -->
+    <aside id="historySidebar" class="h-[30%] landscape:h-full w-full landscape:w-[30%] glass-panel border-0 landscape:border-l border-t landscape:border-t-0 flex flex-col z-20 bg-black/20 transition-all duration-300 ease-in-out origin-right">
+        <div class="p-3 border-b border-white/10 flex justify-between items-center bg-white/5">
+            <span class="text-xs font-bold text-gray-400 tracking-wider">HISTORY</span>
+            <div class="flex flex-col items-end">
+                <span class="text-[10px] text-neonBlue">Ao5</span>
+                <span id="ao5DisplaySidebar" class="text-sm font-mono font-bold text-white leading-none">--.--</span>
+            </div>
+        </div>
+        <div class="grid grid-cols-[0.8fr_1.5fr_2fr_0.7fr] gap-2 px-3 py-2 text-[10px] text-gray-500 font-bold uppercase tracking-wider text-center bg-black/10">
+            <div>#</div>
+            <div>Time</div>
+            <div class="text-right pr-2">When</div>
+            <div>Del</div>
+        </div>
+        <div id="historyList" class="flex-grow overflow-y-auto no-scrollbar p-2 space-y-1"></div>
+        <div class="p-3 border-t border-white/10 bg-black/20">
+            <button id="clearBtn" class="w-full py-3 rounded bg-red-500/10 hover:bg-red-500/20 text-red-400 border border-red-500/30 hover:border-red-500/50 transition-all text-xs font-bold tracking-widest active:scale-95 flex items-center justify-center gap-2">
+                RESET HISTORY
+            </button>
+        </div>
+    </aside>
+
+    <!-- Modals (Result & Confirm) -->
+    <div id="resultModal" class="fixed inset-0 z-50 flex items-center justify-center bg-black/90 backdrop-blur-sm hidden opacity-0 transition-opacity duration-300">
+        <div class="glass-panel p-8 rounded-2xl w-[85%] max-w-sm text-center transform scale-95 transition-transform duration-300 relative overflow-hidden" id="modalContent">
+            <div class="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-transparent via-neonBlue to-transparent opacity-50"></div>
+            <h2 class="text-2xl font-bold italic text-white mb-1">NEW RECORD</h2>
+            <div class="text-5xl font-mono font-bold text-white mb-8 mt-4" id="modalTime">0.000</div>
+            <div class="flex gap-3">
+                <button id="discardBtn" class="flex-1 py-3 rounded-xl border border-white/20 text-gray-400 text-sm">삭제</button>
+                <button id="saveBtn" class="flex-1 py-3 rounded-xl bg-neonBlue text-black font-bold text-sm">저장</button>
+            </div>
+        </div>
+    </div>
+    <div id="confirmModal" class="fixed inset-0 z-[60] flex items-center justify-center bg-black/80 backdrop-blur-sm hidden opacity-0 transition-opacity duration-300">
+        <div class="glass-panel p-6 rounded-2xl w-[80%] max-w-xs text-center bg-[#1e293b]">
+            <h3 class="text-lg font-bold text-white mb-2">Are you sure?</h3>
+            <p id="confirmMessage" class="text-sm text-gray-400 mb-6">삭제하시겠습니까?</p>
+            <div class="flex gap-3">
+                <button id="confirmCancelBtn" class="flex-1 py-2 rounded-lg border border-white/20 text-gray-400 text-xs">취소</button>
+                <button id="confirmOkBtn" class="flex-1 py-2 rounded-lg bg-red-500/80 text-white font-bold text-xs">삭제</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // --- Variables ---
+        const timerEl = document.getElementById('timer');
+        const padLeft = document.getElementById('padLeft');
+        const padRight = document.getElementById('padRight');
+        const resetBtn = document.getElementById('resetBtn');
+        const statusText = document.getElementById('statusText');
+        
+        const historySidebar = document.getElementById('historySidebar');
+        const historyListEl = document.getElementById('historyList');
+        const ao5DisplaySidebar = document.getElementById('ao5DisplaySidebar');
+        const ao5DisplayOverlay = document.getElementById('ao5DisplayOverlay');
+        const ao5Overlay = document.getElementById('ao5Overlay');
+        const scrambleEl = document.getElementById('scrambleDisplay');
+        
+        const modal = document.getElementById('resultModal');
+        const modalContent = document.getElementById('modalContent');
+        const confirmModal = document.getElementById('confirmModal');
+        const confirmMessageEl = document.getElementById('confirmMessage');
+
+        // Logic Variables
+        const HOLD_DURATION = 550; // 0.55s to be ready
+        let state = 'IDLE'; // IDLE, HOLDING, READY, RUNNING, STOPPED, LOCKED(Require Reset)
+        
+        let isLeftDown = false;
+        let isRightDown = false;
+        
+        let startTime = 0;
+        let finalTime = 0;
+        let timerInterval;
+        let holdTimeout;
+        
+        let records = JSON.parse(localStorage.getItem('stacking_records_v2')) || [];
+        let isHistoryOpen = true;
+        let pendingConfirmAction = null;
+
+        // --- Initialization ---
+        init();
+
+        function init() {
+            renderHistory();
+            generateScramble();
+            setupEvents();
+            updateStatusText();
+        }
+
+        function setupEvents() {
+            // Touch/Mouse Events for Pads (Dual Sensor Logic)
+            const addPadEvents = (el, isLeft) => {
+                const down = (e) => {
+                    if(e.cancelable) e.preventDefault();
+                    if(state === 'LOCKED') return; // Must reset first
+                    if(isLeft) isLeftDown = true; else isRightDown = true;
+                    updatePadVisuals();
+                    checkStateChange();
+                };
+                const up = (e) => {
+                    if(isLeft) isLeftDown = false; else isRightDown = false;
+                    updatePadVisuals();
+                    checkStateChange();
+                };
+
+                el.addEventListener('touchstart', down, {passive:false});
+                el.addEventListener('mousedown', down);
+                
+                el.addEventListener('touchend', up);
+                el.addEventListener('mouseup', up);
+                el.addEventListener('mouseleave', up);
+            };
+
+            addPadEvents(padLeft, true);
+            addPadEvents(padRight, false);
+
+            // Reset Button
+            resetBtn.addEventListener('click', () => {
+                if(state !== 'RUNNING') {
+                    resetTimer();
+                }
+            });
+
+            // Toggle History
+            document.getElementById('toggleHistoryBtn').addEventListener('click', toggleHistory);
+
+            // Modal Buttons
+            document.getElementById('saveBtn').addEventListener('click', saveRecord);
+            document.getElementById('discardBtn').addEventListener('click', closeModal);
+            
+            // Confirm Modal
+            document.getElementById('confirmCancelBtn').addEventListener('click', closeConfirmModal);
+            document.getElementById('confirmOkBtn').addEventListener('click', () => {
+                if(pendingConfirmAction) pendingConfirmAction();
+                closeConfirmModal();
+            });
+            
+            // Clear All
+            document.getElementById('clearBtn').addEventListener('click', () => {
+                if(records.length === 0) return;
+                showConfirm("모든 기록을 삭제하시겠습니까?", () => {
+                    records = [];
+                    localStorage.setItem('stacking_records_v2', JSON.stringify(records));
+                    renderHistory();
+                });
+            });
+
+            // Keyboard Shortcuts (Space = Dual Touch Simulation)
+            document.addEventListener('keydown', (e) => {
+                if(e.code === 'Space' && !e.repeat && state !== 'LOCKED') {
+                    isLeftDown = true; isRightDown = true;
+                    updatePadVisuals();
+                    checkStateChange();
+                }
+            });
+            document.addEventListener('keyup', (e) => {
+                if(e.code === 'Space') {
+                    isLeftDown = false; isRightDown = false;
+                    updatePadVisuals();
+                    checkStateChange();
+                }
+            });
+        }
+
+        // --- Core State Machine (Strict Logic) ---
+        function checkStateChange() {
+            if (state === 'IDLE' || state === 'STOPPED') {
+                // To start HOLDING, BOTH must be down.
+                // If only one is down, do nothing (or show warning)
+                if (isLeftDown && isRightDown) {
+                    if (state === 'STOPPED' || (finalTime > 0)) {
+                        // User trying to start without reset
+                        // Do nothing, force reset usage
+                        return;
+                    }
+                    startHolding();
+                }
+            }
+            else if (state === 'HOLDING') {
+                // If ANY hand lifts during holding, go back to IDLE
+                if (!isLeftDown || !isRightDown) {
+                    abortHolding();
+                }
+            }
+            else if (state === 'READY') {
+                // If BOTH hands lift, START!
+                // Real StackMat: Starts when hands leave. 
+                // Strict: Wait for both to leave? Or start when one leaves?
+                // Standard: Start as soon as hands aren't touching sensor.
+                // Logic: If (!left && !right) -> RUN
+                if (!isLeftDown && !isRightDown) {
+                    startRun();
+                }
+            }
+            else if (state === 'RUNNING') {
+                // To STOP, BOTH hands must touch.
+                if (isLeftDown && isRightDown) {
+                    stopRun();
+                }
+            }
+        }
+
+        // --- Actions ---
+        function startHolding() {
+            state = 'HOLDING';
+            updateStatusText();
+            timerEl.classList.add('text-neonRed');
+            
+            // Wait for hold duration
+            holdTimeout = setTimeout(() => {
+                if (state === 'HOLDING' && isLeftDown && isRightDown) {
+                    state = 'READY';
+                    document.body.classList.add('ready-state');
+                    updateStatusText();
+                    timerEl.classList.remove('text-neonRed');
+                    timerEl.classList.add('text-neonGreen');
+                    vibrate(50);
+                }
+            }, HOLD_DURATION);
+        }
+
+        function abortHolding() {
+            clearTimeout(holdTimeout);
+            state = 'IDLE';
+            timerEl.classList.remove('text-neonRed');
+            updateStatusText();
+        }
+
+        function startRun() {
+            state = 'RUNNING';
+            document.body.classList.remove('ready-state');
+            timerEl.classList.remove('text-neonGreen');
+            updateStatusText();
+            startTime = performance.now();
+            
+            timerInterval = setInterval(() => {
+                const now = performance.now();
+                const diff = (now - startTime) / 1000;
+                timerEl.innerText = diff.toFixed(3);
+            }, 16);
+        }
+
+        function stopRun() {
+            clearInterval(timerInterval);
+            const now = performance.now();
+            finalTime = (now - startTime) / 1000;
+            timerEl.innerText = finalTime.toFixed(3);
+            
+            state = 'LOCKED'; // Must reset to measure again
+            updateStatusText();
+            vibrate([50, 50]);
+            
+            checkRecord(finalTime);
+        }
+
+        function resetTimer() {
+            state = 'IDLE';
+            finalTime = 0;
+            timerEl.innerText = "0.000";
+            timerEl.classList.remove('text-neonGreen', 'text-neonRed');
+            document.body.classList.remove('ready-state');
+            updateStatusText();
+            vibrate(30);
+        }
+
+        // --- Visuals ---
+        function updatePadVisuals() {
+            if (isLeftDown) padLeft.classList.add('active');
+            else padLeft.classList.remove('active');
+            
+            if (isRightDown) padRight.classList.add('active');
+            else padRight.classList.remove('active');
+        }
+
+        function updateStatusText() {
+            if (state === 'IDLE') statusText.innerText = "양손을 올려주세요";
+            else if (state === 'HOLDING') {
+                statusText.innerText = "준비 중...";
+                statusText.className = "text-xs md:text-sm font-bold tracking-[0.4em] text-neonRed mb-2 md:mb-4 transition-colors duration-300";
+            }
+            else if (state === 'READY') {
+                statusText.innerText = "준비 완료! 손을 떼세요";
+                statusText.className = "text-xs md:text-sm font-bold tracking-[0.4em] text-neonGreen mb-2 md:mb-4 transition-colors duration-300";
+            }
+            else if (state === 'RUNNING') {
+                statusText.innerText = "측정 중";
+                statusText.className = "text-xs md:text-sm font-bold tracking-[0.4em] text-transparent mb-2 md:mb-4 transition-colors duration-300";
+            }
+            else if (state === 'LOCKED') {
+                statusText.innerText = "리셋하여 다시 시작";
+                statusText.className = "text-xs md:text-sm font-bold tracking-[0.4em] text-gray-400 mb-2 md:mb-4 transition-colors duration-300 animate-pulse";
+            }
+        }
+
+        // --- Data & History ---
+        function checkRecord(time) {
+            document.getElementById('modalTime').innerText = time.toFixed(3);
+            modal.classList.remove('hidden');
+            void modal.offsetWidth;
+            modal.classList.remove('opacity-0');
+            modalContent.classList.remove('scale-95');
+        }
+
+        function saveRecord() {
+            const now = new Date();
+            const record = {
+                time: finalTime,
+                date: `${now.getMonth()+1}/${now.getDate()} ${now.getHours()}:${String(now.getMinutes()).padStart(2,'0')}`,
+                timestamp: now.getTime()
+            };
+            records.unshift(record);
+            localStorage.setItem('stacking_records_v2', JSON.stringify(records));
+            closeModal();
+            renderHistory();
+            generateScramble();
+            // User stays in LOCKED state until they hit reset
+        }
+
+        function closeModal() {
+            modal.classList.add('opacity-0');
+            modalContent.classList.add('scale-95');
+            setTimeout(() => {
+                modal.classList.add('hidden');
+            }, 300);
+        }
+
+        function showConfirm(msg, action) {
+            confirmMessageEl.innerText = msg;
+            pendingConfirmAction = action;
+            confirmModal.classList.remove('hidden');
+            void confirmModal.offsetWidth;
+            confirmModal.classList.remove('opacity-0');
+        }
+
+        function closeConfirmModal() {
+            confirmModal.classList.add('opacity-0');
+            setTimeout(() => {
+                confirmModal.classList.add('hidden');
+                pendingConfirmAction = null;
+            }, 300);
+        }
+        
+        // Expose for inline onclick
+        window.deleteOneRecord = function(index) {
+            showConfirm("이 기록을 삭제하시겠습니까?", () => {
+                records.splice(index, 1);
+                localStorage.setItem('stacking_records_v2', JSON.stringify(records));
+                renderHistory();
+            });
+        };
+
+        function renderHistory() {
+            historyListEl.innerHTML = '';
+            if (records.length === 0) {
+                historyListEl.innerHTML = '<div class="text-center text-gray-600 text-[10px] py-4 italic">기록 없음</div>';
+                updateAo5("--.--");
+                return;
+            }
+            if (records.length >= 5) {
+                const times = records.slice(0, 5).map(r => r.time);
+                times.sort((a,b) => a-b);
+                const avg = (times[1] + times[2] + times[3]) / 3;
+                updateAo5(avg.toFixed(3));
+            } else {
+                updateAo5("--.--");
+            }
+            
+            const sorted = [...records].sort((a,b) => a.time - b.time);
+            records.forEach((rec, i) => {
+                const rank = sorted.indexOf(rec) + 1;
+                const isBest = rank === 1;
+                const div = document.createElement('div');
+                div.className = `grid grid-cols-[0.8fr_1.5fr_2fr_0.7fr] gap-2 text-xs p-2 rounded border ${isBest ? 'bg-neonBlue/10 border-neonBlue/30 text-neonBlue' : 'bg-white/5 border-transparent text-gray-400 hover:bg-white/10'}`;
+                div.innerHTML = `
+                    <div class="flex items-center justify-center font-bold">#${rank}</div>
+                    <div class="flex items-center justify-center font-mono text-white">${rec.time.toFixed(3)}</div>
+                    <div class="flex items-center justify-end text-[10px] opacity-70">${rec.date}</div>
+                    <div class="flex items-center justify-center">
+                        <button class="text-gray-500 hover:text-red-400 p-1" onclick="deleteOneRecord(${i})">
+                            <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>
+                        </button>
+                    </div>`;
+                historyListEl.appendChild(div);
+            });
+        }
+
+        function updateAo5(val) {
+            ao5DisplaySidebar.innerText = val;
+            ao5DisplayOverlay.innerText = val;
+        }
+
+        function toggleHistory() {
+            isHistoryOpen = !isHistoryOpen;
+            const btn = document.getElementById('toggleHistoryBtn');
+            if (isHistoryOpen) {
+                historySidebar.classList.remove('hidden');
+                ao5Overlay.classList.remove('flex'); ao5Overlay.classList.add('hidden');
+                document.body.classList.remove('history-hidden');
+                btn.classList.add('text-neonBlue');
+            } else {
+                historySidebar.classList.add('hidden');
+                ao5Overlay.classList.remove('hidden'); ao5Overlay.classList.add('flex');
+                document.body.classList.add('history-hidden');
+                btn.classList.remove('text-neonBlue');
+            }
+        }
+
+        function generateScramble() {
+            const keys = ["L", "R", "C", "U"];
+            let s = "";
+            for(let i=0; i<10; i++) {
+                s += keys[Math.floor(Math.random()*keys.length)] + Math.floor(Math.random()*6) + " ";
+            }
+            scrambleEl.innerText = s;
+        }
+
+        function vibrate(ptrn) {
+            if (navigator.vibrate) navigator.vibrate(ptrn);
+        }
+    </script>
+</body>
+</html>
+
+
